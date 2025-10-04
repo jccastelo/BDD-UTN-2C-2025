@@ -445,3 +445,79 @@ WHERE i.item_producto = (
 )
 GROUP BY YEAR(f.fact_fecha), i.item_producto
 ORDER BY SUM(i.item_cantidad) DESC
+
+
+-- EJERCICIO 24
+-- FACTURAS DE LOS TOP 2 VENDEDORES CON MAS COMISIONES
+-- RETORNE PROD CON COMPOSICION FACTURADOS EN AL MENOS 5 FACTURAS
+-- COD PROD, NOMBRE PROD, UNIDADES FACTURADAS
+SELECT p.prod_codigo,
+       p.prod_detalle,
+       SUM(i.item_cantidad) AS unidades_facturadas
+FROM Producto p
+INNER JOIN Composicion c 
+        ON p.prod_codigo = c.comp_componente
+INNER JOIN Item_Factura i 
+        ON i.item_producto = p.prod_codigo
+INNER JOIN Factura f 
+        ON f.fact_numero   = i.item_numero
+       AND f.fact_tipo     = i.item_tipo
+       AND f.fact_sucursal = i.item_sucursal
+WHERE f.fact_vendedor IN (
+    SELECT TOP 2 e.empl_codigo
+    FROM Empleado e
+    ORDER BY e.empl_comision DESC
+)
+GROUP BY p.prod_codigo, p.prod_detalle
+HAVING COUNT(DISTINCT f.fact_numero) >= 5
+ORDER BY unidades_facturadas DESC
+
+
+-- EJERCICIO 25
+SELECT YEAR(f.fact_fecha) AS año,
+
+        p.prod_familia AS familia_mas_vendida,
+
+        COUNT(DISTINCT p.prod_rubro) AS cant_rubros_familia,
+
+        (SELECT COUNT(DISTINCT c.comp_componente)
+        FROM Item_Factura i3 
+        LEFT OUTER JOIN Composicion c ON i3.item_producto = c.comp_producto
+        WHERE i3.item_producto = (SELECT TOP 1 p3.prod_codigo 
+                                    FROM Producto p3
+                                    INNER JOIN Item_Factura i3 ON i3.item_producto = p3.prod_codigo
+                                    WHERE p3.prod_familia = p.prod_familia
+                                    GROUP BY p3.prod_codigo
+                                    ORDER BY SUM(i3.item_cantidad) DESC)
+        ) AS cant_productos_componen,
+        COUNT(DISTINCT f.fact_numero + f.fact_tipo + f.fact_sucursal) AS cant_facturas,
+
+        (SELECT TOP 1 f4.fact_cliente
+        FROM Factura f4 
+        INNER JOIN Item_Factura i4 ON f4.fact_numero = i4.item_numero
+        INNER JOIN Producto p4 ON p4.prod_codigo = i4.item_producto
+        WHERE  p4.prod_familia = p.prod_familia
+        GROUP BY f4.fact_cliente
+        ORDER BY SUM(i4.item_cantidad) DESC) AS cliente_mas_comprador,
+
+        (SUM(i.item_cantidad) / (SELECT SUM(i5.item_cantidad) 
+                                FROM Item_Factura i5
+                                INNER JOIN Factura f5 ON f5.fact_numero = i5.item_numero
+                                WHERE YEAR(f5.fact_fecha) = YEAR(f.fact_fecha))
+        * 100) AS porcentaje_familia
+FROM Producto p 
+INNER JOIN Item_Factura i ON p.prod_codigo = i.item_producto
+INNER JOIN Factura f ON f.fact_numero = i.item_numero
+                    AND f.fact_tipo = i.item_tipo
+                    AND f.fact_sucursal = i.item_sucursal
+WHERE p.prod_familia = (SELECT TOP 1 p2.prod_familia
+                            FROM Producto p2
+                            INNER JOIN Item_Factura i2 ON i2.item_producto = p2.prod_codigo
+                            INNER JOIN Factura f2 ON f2.fact_numero = i2.item_numero
+                                                AND f2.fact_tipo = i2.item_tipo
+                                                AND f2.fact_sucursal = i2.item_sucursal 
+                            WHERE YEAR(f2.fact_fecha) = YEAR(f.fact_fecha)
+                            GROUP BY p2.prod_familia
+                            ORDER BY SUM(i2.item_cantidad) DESC)
+GROUP BY YEAR(f.fact_fecha), p.prod_familia
+ORDER BY SUM(i.item_cantidad) DESC, p.prod_familia DESC

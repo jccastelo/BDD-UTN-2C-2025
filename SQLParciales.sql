@@ -325,3 +325,50 @@ WHERE (SELECT SUM(f2.fact_total)
                                                 WHERE YEAR(f5.fact_fecha) = DATEADD(YEAR, -3, GETDATE())
                                                 AND f5.fact_vendedor = e.empl_codigo)
 GROUP BY e.empl_codigo, e.empl_apellido, e.empl_nombre
+
+
+
+
+
+
+
+
+
+-- uno de chatgpt CON MESES CONSECUTIVOS
+
+SELECT 
+    ROW_NUMBER() OVER (ORDER BY COUNT(DISTINCT f.fact_tipo + f.fact_sucursal + f.fact_numero) DESC) AS nro_fila,
+    CONCAT(RTRIM(e.empl_apellido), ', ', RTRIM(e.empl_nombre)) AS vendedor,
+    
+    -- empleados a cargo
+    (SELECT COUNT(*) 
+     FROM Empleado e2 
+     WHERE e2.empl_jefe = e.empl_codigo) AS empleados_a_cargo,
+
+    -- clientes distintos
+    COUNT(DISTINCT f.fact_cliente) AS clientes_distintos
+
+FROM Empleado e
+INNER JOIN Factura f 
+       ON f.fact_vendedor = e.empl_codigo
+
+WHERE 
+    -- Suma de ventas últimos dos meses < mismos meses año anterior
+    (SELECT SUM(f2.fact_total)
+     FROM Factura f2
+     WHERE f2.fact_vendedor = e.empl_codigo
+       AND YEAR(f2.fact_fecha) = YEAR(GETDATE())
+       AND MONTH(f2.fact_fecha) BETWEEN MONTH(DATEADD(MONTH,-1,GETDATE())) 
+                                    AND MONTH(GETDATE())
+    ) < 
+    (SELECT SUM(f3.fact_total)
+     FROM Factura f3
+     WHERE f3.fact_vendedor = e.empl_codigo
+       AND YEAR(f3.fact_fecha) = YEAR(GETDATE()) - 1
+       AND MONTH(f3.fact_fecha) BETWEEN MONTH(DATEADD(MONTH,-1,GETDATE())) 
+                                    AND MONTH(GETDATE())
+    )
+
+GROUP BY e.empl_codigo, e.empl_apellido, e.empl_nombre
+
+ORDER BY SUM(f.fact_total) DESC;

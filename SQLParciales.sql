@@ -254,3 +254,74 @@ INNER JOIN Item_Factura i ON i.item_numero = f.fact_numero
                                 AND i.item_tipo = f.fact_tipo
 WHERE YEAR(f.fact_fecha) % 2 = 0
 GROUP BY f.fact_cliente
+
+
+
+-- 2C2024 16/11
+-- compraron +3 rubros en 2012
+-- no compraron en años impares
+
+
+SELECT  ROW_NUMBER() OVER (ORDER BY SUM(i.item_cantidad)) AS numero_fila,
+        c.clie_codigo,
+        c.clie_razon_social,
+        SUM(i.item_cantidad) AS cant_comprada_cliente,
+        (SELECT TOP 1 r.rubr_detalle
+        FROM Rubro r
+        INNER JOIN Producto p4 ON p4.prod_rubro = r.rubr_id
+        INNER JOIN Item_Factura i4 ON i4.item_producto = p4.prod_codigo
+        INNER JOIN Factura f4 ON i4.item_numero = f4.fact_numero
+                                AND i4.item_sucursal = f4.fact_sucursal
+                                AND i4.item_tipo = f4.fact_tipo
+        WHERE f4.fact_cliente = c.clie_codigo
+        AND YEAR(f4.fact_fecha) = 2012
+        GROUP BY r.rubr_id, r.rubr_detalle
+        ORDER BY COUNT(r.rubr_id) DESC) AS rubro_que_mas_compro
+FROM Cliente c 
+INNER JOIN Factura f ON f.fact_cliente = c.clie_codigo
+INNER JOIN Item_Factura i ON i.item_numero = f.fact_numero
+                                AND i.item_sucursal = f.fact_sucursal
+                                AND i.item_tipo = f.fact_tipo
+INNER JOIN Producto p ON p.prod_codigo = i.item_producto
+WHERE YEAR(f.fact_fecha) = 2012
+AND c.clie_codigo NOT IN (SELECT f2.fact_cliente
+                        FROM Factura f2
+                        WHERE YEAR(f2.fact_fecha) % 2 = 1)
+GROUP BY c.clie_codigo, c.clie_razon_social
+HAVING COUNT(DISTINCT p.prod_rubro) > 3
+
+
+
+-- 2C2024 23/11
+
+SELECT SUM(f.fact_total)
+FROM Factura f 
+WHERE YEAR(f.fact_fecha) = 2012
+GROUP BY f.fact_vendedor
+
+SELECT ROW_NUMBER() OVER (ORDER BY COUNT(DISTINCT f.fact_numero + f.fact_sucursal + f.fact_tipo) DESC),
+
+        CONCAT(RTRIM(e.empl_apellido),',',SPACE(1),RTRIM(e.empl_nombre)) AS apellido_y_nombre,
+
+        (SELECT COUNT(DISTINCT empl.empl_codigo)
+        FROM Empleado empl
+        WHERE empl.empl_jefe = e.empl_codigo) AS cant_empleados,
+
+        COUNT(DISTINCT f.fact_cliente) AS clientes_que_vendio
+FROM Empleado e 
+INNER JOIN Factura f ON f.fact_vendedor = e.empl_codigo
+WHERE (SELECT SUM(f2.fact_total)
+        FROM Factura f2 
+        WHERE YEAR(f2.fact_fecha) = DATEADD(YEAR, -1, GETDATE())
+        AND f2.fact_vendedor = e.empl_codigo) > 2 * (SELECT SUM(f3.fact_total)
+                                                FROM Factura f3 
+                                                WHERE YEAR(f3.fact_fecha) = DATEADD(YEAR, -2, GETDATE())
+                                                AND f3.fact_vendedor = e.empl_codigo)
+        AND (SELECT SUM(f4.fact_total)
+        FROM Factura f4 
+        WHERE YEAR(f4.fact_fecha) = DATEADD(YEAR, -2, GETDATE())
+        AND f4.fact_vendedor = e.empl_codigo) > 2 * (SELECT SUM(f5.fact_total)
+                                                FROM Factura f5 
+                                                WHERE YEAR(f5.fact_fecha) = DATEADD(YEAR, -3, GETDATE())
+                                                AND f5.fact_vendedor = e.empl_codigo)
+GROUP BY e.empl_codigo, e.empl_apellido, e.empl_nombre

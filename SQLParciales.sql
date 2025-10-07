@@ -203,3 +203,54 @@ WHERE e.empl_codigo = (SELECT TOP 1 f2.fact_vendedor
                         ORDER BY COUNT(DISTINCT f2.fact_numero + f2.fact_sucursal + f2.fact_tipo) DESC)
 GROUP BY e.empl_codigo, e.empl_apellido, e.empl_nombre
 
+
+
+
+-- PARCIAL REINOSA 1C2024
+
+SELECT p.prod_codigo,
+        p.prod_detalle,
+        d.depo_domicilio,
+        (SELECT COUNT(DISTINCT d2.depo_codigo)
+        FROM Stock s3
+        INNER JOIN Deposito d2 ON s3.stoc_deposito = d2.depo_codigo
+        WHERE s3.stoc_producto = s.stoc_producto
+        AND s3.stoc_deposito <> d.depo_codigo
+        AND s3.stoc_cantidad > s3.stoc_punto_reposicion) AS cant_depositos_stock_superior
+FROM Stock s 
+INNER JOIN Deposito d ON d.depo_codigo = s.stoc_deposito
+INNER JOIN Producto p ON s.stoc_producto = p.prod_codigo
+WHERE (s.stoc_cantidad <= 0 OR s.stoc_cantidad IS NULL)
+AND EXISTS (SELECT 1
+                FROM Stock s2
+                WHERE s2.stoc_producto = s.stoc_producto
+                AND s2.stoc_deposito <> d.depo_codigo
+                AND s2.stoc_cantidad > s2.stoc_punto_reposicion) 
+ORDER BY p.prod_codigo
+
+
+
+
+-- 2C2024 13/11
+SELECT  ROW_NUMBER() OVER (ORDER BY SUM(i.item_cantidad) DESC) AS num_fila,
+
+        f.fact_cliente,
+
+        (SELECT TOP 1 p.prod_detalle
+        FROM Producto p 
+        INNER JOIN Item_Factura i2 ON i2.item_producto = p.prod_codigo
+        INNER JOIN Factura f2 ON i2.item_numero = f2.fact_numero
+                                AND i2.item_sucursal = f2.fact_sucursal
+                                AND i2.item_tipo = f2.fact_tipo
+        WHERE f2.fact_cliente = f.fact_cliente
+        GROUP BY p.prod_codigo, p.prod_detalle
+        ORDER BY SUM(i2.item_cantidad) DESC) AS prod_mas_comprado,
+
+        SUM(i.item_cantidad) AS cant_comprados
+
+FROM Factura f 
+INNER JOIN Item_Factura i ON i.item_numero = f.fact_numero
+                                AND i.item_sucursal = f.fact_sucursal
+                                AND i.item_tipo = f.fact_tipo
+WHERE YEAR(f.fact_fecha) % 2 = 0
+GROUP BY f.fact_cliente

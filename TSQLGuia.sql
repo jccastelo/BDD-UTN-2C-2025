@@ -493,3 +493,115 @@ BEGIN
 
 END;
 GO
+
+
+
+-- EJERCICIO 12
+
+CREATE TRIGGER TR_NO_AUTO_COMPOSICION
+ON Composicion
+AFTER INSERT, UPDATE
+AS 
+BEGIN
+    IF UPDATE(comp_producto) OR UPDATE(comp_componente)
+    BEGIN
+
+        DECLARE @cantidad INT = 1;
+        DECLARE @nivel INT = 0;
+
+        CREATE TABLE #tr_composicion (
+            componente CHAR(8),
+            nivel INT
+        )
+
+        IF EXISTS (SELECT 1 FROM inserted WHERE comp_producto = comp_componente)
+        BEGIN
+            ROLLBACK TRANSACTION;
+            RETURN;
+        END;
+
+        INSERT INTO #tr_composicion (componente, nivel)
+        SELECT comp_componente, @nivel
+        FROM inserted
+
+        WHILE @cantidad > 0
+        BEGIN
+
+            INSERT INTO #tr_composicion (componente, nivel)
+            SELECT c.comp_componente, @nivel + 1
+            FROM Composicion c
+            INNER JOIN #tr_composicion t ON t.componente = c.comp_producto
+            AND t.nivel = @nivel
+
+            SET @nivel = @nivel + 1
+            SET @cantidad = @@ROWCOUNT
+
+        END;
+
+        IF EXISTS (SELECT 1 FROM inserted i INNER JOIN #tr_composicion t ON i.comp_producto = t.componente)
+        BEGIN
+            ROLLBACK TRANSACTION;
+            RETURN;
+        END;
+    END;
+END;
+GO
+
+
+
+-- EJERCICIO 13
+
+CREATE FUNCTION FN_SUMA_SALARIO_EMPLEADOS (@jefe NUMERIC(6))
+RETURNS DECIMAL(12,2)
+AS
+BEGIN
+
+    DECLARE @retorno DECIMAL(12,2)
+    DECLARE @empl_a_cargo NUMERIC(6)
+    DECLARE @salario_actual DECIMAL(12,2)
+
+    IF NOT EXISTS (SELECT 1 FROM Empleado e WHERE e.empl_jefe = @jefe)
+        BEGIN
+            SET @retorno = 0
+            RETURN @retorno
+        END;
+
+    DECLARE cEmpleados CURSOR FOR
+    SELECT e.empl_codigo, e.empl_salario
+    FROM Empleado e 
+    WHERE e.empl_jefe = @jefe
+
+    SET @retorno = 0
+
+    OPEN cEmpleados
+    FETCH NEXT INTO @empl_a_cargo, @salario_actual
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        SET @retorno = @retorno 
+                    + @salario_actual
+                    + dbo.FN_SUMA_SALARIO_EMPLEADOS(@empl_a_cargo)
+        FETCH NEXT INTO @empl_a_cargo, @salario_actual
+    END;
+    CLOSE cEmpleados
+    DEALLOCATE cEmpleados
+
+    RETURN @retorno
+
+END;
+GO
+
+CREATE TRIGGER TR_TOPE_SALARIAL_JEFE
+ON Empleado
+AFTER INSERT, UPDATE
+AS 
+BEGIN
+    IF UPDATE(empl_salario) OR UPDATE(empl_jefe)
+    BEGIN
+
+        IF EXISTS (SELECT 1 FROM inserted i WHERE i.empl_salario > 0.2 * dbo.FN_SUMA_SALARIO_EMPLEADOS(i.empl_codigo))
+        BEGIN
+            ROLLBACK TRANSACTION;
+            RETURN;
+        END;
+    END;
+END;

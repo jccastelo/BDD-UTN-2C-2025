@@ -339,7 +339,7 @@ AS
 
         DECLARE cComponentes CURSOR FOR
         SELECT c.comp_componente, c.comp_cantidad
-        FROM Componente c
+        FROM Composicion c
         WHERE c.comp_producto = @producto
 
         SET @suma = 0
@@ -390,14 +390,14 @@ AFTER UPDATE
 AS
     BEGIN
 
-    DECLARE @componente CHAR(8), @cantidad DECIMAL(12,2)
+    DECLARE @componente CHAR(8), @cantidad DECIMAL(12,2), @producto CHAR(8)
 
     DECLARE cComponentes CURSOR FOR 
     SELECT c.comp_componente, (i.item_cantidad - d.item_cantidad) * c.comp_cantidad
     FROM Composicion c 
     INNER JOIN inserted i ON c.comp_producto = i.item_producto
     INNER JOIN deleted d ON d.item_producto = i.item_producto
-                        AND d.Item_factura = i.Item_factura
+                        AND d.item_numero = i.item_numero
                         AND d.item_tipo = i.item_tipo
                         AND d.item_sucursal = i.item_sucursal
     WHERE i.item_cantidad > d.item_cantidad
@@ -465,7 +465,7 @@ BEGIN
     DECLARE @retorno INTEGER
     DECLARE @empl_a_cargo NUMERIC(6)
 
-    IF NOT EXISTS (SELECT 1 FROM Empleados e WHERE e.empl_jefe = @empleado)
+    IF NOT EXISTS (SELECT 1 FROM Empleado e WHERE e.empl_jefe = @empleado)
         BEGIN
             SET @retorno = 0
             RETURN @retorno
@@ -473,7 +473,7 @@ BEGIN
 
     DECLARE cEmpleados CURSOR FOR
     SELECT e.empl_codigo
-    FROM Empleados e 
+    FROM Empleado e 
     WHERE e.empl_jefe = @empleado
     AND e.empl_codigo > e.empl_jefe
 
@@ -605,3 +605,264 @@ BEGIN
         END;
     END;
 END;
+GO
+
+
+-- EJERCICIO 14
+
+CREATE FUNCTION FN_SUMA_PROD_COMPUESTOS (@producto CHAR(8))
+RETURNS DECIMAL(12,2)
+AS
+BEGIN
+
+    DECLARE @retorno DECIMAL(12,2)
+
+    IF @producto NOT IN (SELECT c.comp_producto FROM Composicion c)
+    BEGIN
+        RETURN 0
+    END;
+
+    SELECT @retorno = SUM(p.prod_precio)
+    FROM Composicion c 
+    INNER JOIN Producto p ON p.prod_codigo = c.comp_componente
+    WHERE c.comp_producto = @producto
+    GROUP BY c.comp_producto
+
+    RETURN @retorno
+
+
+END;
+GO
+
+CREATE TRIGGER TR_PRECIO_PROD_COMPUESTO
+ON Item_factura
+AFTER INSERT
+AS
+BEGIN
+
+    DECLARE @prod_comprado CHAR(8)
+    DECLARE @fecha SMALLDATETIME, @cliente CHAR(6), @precio DECIMAL(12,2)
+
+    DECLARE cProducto CURSOR FOR
+    SELECT  i.item_producto,
+            f.fact_fecha,
+            f.fact_cliente,
+            i.item_precio * i.item_cantidad
+    FROM inserted i
+    INNER JOIN Composicion c ON c.comp_producto = item_producto
+    INNER JOIN Factura f ON f.fact_numero + f.fact_tipo + f.fact_sucursal = i.item_numero + i.item_tipo + i.item_sucursal
+    WHERE i.item_precio < dbo.FN_CALCULAR_SUMA_COMPONENTES(i.item_producto)
+
+    OPEN cProducto
+    FETCH NEXT INTO @prod_comprado, @fecha, @cliente, @precio
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+
+        IF @precio < 0.5 * dbo.FN_CALCULAR_SUMA_COMPONENTES(@prod_comprado)
+        BEGIN
+            ROLLBACK TRANSACTION;
+            RETURN;
+        END;
+
+        PRINT 'FECHA: ' + CONVERT(VARCHAR, @fecha, 103)
+                + 'CLIENTE: ' + @cliente
+                + 'PRODUCTO: ' + @producto
+                + 'PRECIO: ' + CAST(@precio AS VARCHAR)
+        FETCH NEXT INTO @prod_comprado, @fecha, @cliente, @precio
+    END;
+    CLOSE cEmpleados
+    DEALLOCATE cEmpleados
+
+END;
+GO
+
+
+
+-- EJERCICIO 15
+
+--TRAIGO LA FUNCION DE OTRO EJERCICIO FN_CALCULAR_SUMA_COMPONENTES
+
+CREATE FUNCTION FN_PRECIO_PRODUCTO (@producto CHAR(8))
+RETURNS DECIMAL(12,2)
+AS
+BEGIN
+
+    DECLARE @precio DECIMAL(12,2)
+
+    SELECT @precio = prod_precio
+    FROM Producto
+    WHERE prod_codigo = @producto
+
+    IF @producto IN (SELECT comp_producto FROM Composicion)
+    BEGIN
+        SET @precio = dbo.FN_CALCULAR_SUMA_COMPONENTES(@producto)
+    END;
+
+    RETURN @precio
+
+END;
+GO
+
+
+
+-- EJERCICIO 16
+
+CREATE TRIGGER TR_DESCONTAR_STOCK_VENTA
+ON Item_factura
+AFTER INSERT
+AS
+BEGIN
+
+    DECLARE @prod_vendido CHAR(8), @cantidad DECIMAL(12,2)
+    DECLARE @deposito CHAR(2), @cantidad_deposito DECIMAL(12,2), @ultimo_deposito CHAR(2)
+
+    DECLARE cProducto CURSOR FOR
+    SELECT i.item_producto, 
+            SUM(i.item_cantidad)
+    FROM inserted i
+    GROUP BY i.item_producto
+
+    OPEN cProducto
+    FETCH NEXT INTO @prod_vendido, @cantidad
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+
+        DECLARE cStock CURSOR FOR
+        SELECT s.stoc_deposito,
+                s.stoc_cantidad
+        FROM Stock s
+        WHERE s.stoc_producto = @prod_vendido
+        ORDER BY s.stoc_cantidad DESC
+
+        OPEN cStock
+        FETCH NEXT INTO @deposito, @cantidad_deposito
+        WHILE @@FETCH_STATUS = 0 AND @cantidad > 0
+        BEGIN
+
+            SET @ultimo_deposito = @deposito
+
+            IF @cantidad_deposito >= @cantidad
+            BEGIN
+                SET @cantidad_deposito = @cantidad_deposito - @cantidad
+                SET @cantidad = 0
+            END;
+            ELSE
+            BEGIN
+                SET @cantidad = @cantidad - @cantidad_deposito
+                SET @cantidad_deposito = 0
+            END;
+
+            UPDATE Stock
+            SET stoc_cantidad = @cantidad_deposito
+            WHERE stoc_deposito = @deposito AND stoc_producto = @prod_vendido
+
+            FETCH NEXT INTO @deposito, @cantidad_deposito
+
+        END;
+
+        IF @cantidad > 0
+        BEGIN
+            UPDATE Stock 
+            SET stoc_cantidad = stoc_cantidad - @cantidad
+            WHERE stoc_deposito = @ultimo_deposito AND stoc_producto = @prod_vendido
+        END;
+
+        CLOSE cStock
+        DEALLOCATE cStock
+
+        FETCH NEXT INTO @prod_vendido, @cantidad
+    END;
+    CLOSE cProducto
+    DEALLOCATE cProducto
+
+END;
+GO
+
+
+
+-- EJERCICIO 17
+
+CREATE TRIGGER TR_STOCK_MAX_MIN
+ON Stock
+AFTER INSERT, UPDATE
+AS
+BEGIN
+
+    IF UPDATE(stoc_cantidad)
+        BEGIN
+
+        IF EXISTS (SELECT 1 FROM inserted i WHERE i.stoc_cantidad < i.stoc_punto_reposicion
+                                                OR i.stoc_cantidad > i.stoc_stock_maximo)
+        BEGIN
+            ROLLBACK TRANSACTION;
+            RETURN;
+        END;
+
+    END;
+
+END;
+GO
+
+
+
+-- EJERCICIO 18
+
+CREATE TRIGGER TR_MONTO_MAXIMO_CLIENTE
+ON Factura 
+AFTER INSERT
+AS
+BEGIN
+
+    IF EXISTS (SELECT 1
+                FROM inserted f 
+                INNER JOIN Cliente c ON c.clie_codigo = f.fact_cliente
+                GROUP BY f.fact_cliente, MONTH(f.fact_fecha), YEAR(f.fact_fecha), c.clie_limite_credito
+                HAVING c.clie_limite_credito < (SELECT SUM(f2.fact_total)
+                                                FROM Factura f2
+                                                WHERE f2.fact_cliente = f.fact_cliente
+                                                AND YEAR(f2.fact_fecha) = YEAR(f.fact_fecha)
+                                                AND MONTH(f2.fact_fecha) = MONTH(f.fact_fecha)))
+    BEGIN
+        ROLLBACK TRANSACTION;
+        RETURN;
+    END;
+    
+END;
+GO
+
+
+
+-- EJERCICIO 19
+
+CREATE TRIGGER TR_JEFE_ANTIGUEDAD_PERSONAL
+ON Empleado
+AFTER INSERT, UPDATE
+AS
+BEGIN
+
+    CREATE TABLE #Jefe (
+        codigo NUMERIC(6)
+    )
+
+    INSERT INTO #Jefe (codigo)
+    SELECT DISTINCT j.empl_codigo
+    FROM Empleado j
+    INNER JOIN Empleado e ON e.empl_jefe = j.empl_codigo
+
+    IF EXISTS (SELECT 1 FROM inserted WHERE empl_codigo IN (SELECT codigo FROM #Jefe)
+                                            AND DATEDIFF(YEAR, empl_ingreso, GETDATE()) < 5)
+    BEGIN
+        ROLLBACK TRANSACTION;
+        RETURN;
+    END;
+
+    IF EXISTS (SELECT 1 FROM inserted WHERE empl_codigo IN (SELECT codigo FROM #Jefe)
+                                            AND dbo.FN_EMPLEADOS_A_CARGO(empl_codigo) > 0.5 * (SELECT COUNT(*) FROM Empleado)
+                                            AND empl_jefe IS NOT NULL)
+    BEGIN
+        ROLLBACK TRANSACTION;
+        RETURN;
+    END;
+    
+END;
+GO

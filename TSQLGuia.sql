@@ -1120,3 +1120,264 @@ GO
 
 
 -- EJERCICIO 25
+
+CREATE TRIGGER TR_NO_COMPOSICION_RECURSIVA
+ON Composicion
+AFTER INSERT, UPDATE
+AS
+BEGIN
+
+    IF UPDATE(comp_producto) OR UPDATE(comp_componente)
+    BEGIN
+
+        IF EXISTS (SELECT 1
+                    FROM inserted i
+                    INNER JOIN Composicion c ON c.comp_producto = i.comp_componente
+                                            AND c.comp_componente = i.comp_producto)
+        BEGIN
+            ROLLBACK TRANSACTION;
+            RETURN;
+        END;
+
+    END;
+
+END;
+GO
+
+
+
+-- EJERCICIO 26
+
+CREATE TRIGGER TR_NO_COMPOSICION_FACTURA
+ON Item_factura
+AFTER INSERT
+AS
+BEGIN
+
+    IF EXISTS (SELECT 1
+                FROM inserted i
+                INNER JOIN Composicion c ON i.item_producto = c.comp_componente
+                WHERE c.comp_producto IN (SELECT i2.item_producto
+                                            FROM Item_Factura i2
+                                            WHERE i2.item_numero = i.item_numero
+                                            AND i2.item_sucursal = i.item_sucursal
+                                            AND i2.item_tipo = i.item_tipo))
+    BEGIN
+        ROLLBACK TRANSACTION
+        PRINT 'NO SE PUEDEN FACTURAR PRODUCTOS QUE COMPONEN OTROS EN LA MISMA FACTURA'
+        RETURN;
+    END;
+END;
+GO
+
+
+
+-- EJERCICIO 27
+
+CREATE FUNCTION FN_OBTENER_NUEVO_ENCARGADO ()
+RETURNS NUMERIC(6)
+AS
+BEGIN
+
+    DECLARE @nuevo_encargado NUMERIC(6)
+
+    SELECT TOP 1 @nuevo_encargado = e.empl_codigo
+    FROM Empleado e 
+    LEFT OUTER JOIN Deposito d ON d.depo_encargado = e.empl_codigo
+    WHERE e.empl_codigo NOT IN (SELECT DISTINCT e2.empl_jefe
+                                FROM Empleado e2
+                                WHERE e2.empl_jefe IS NOT NULL)
+        AND e.empl_codigo NOT IN (SELECT DISTINCT c.clie_vendedor
+                                    FROM Cliente c
+                                    WHERE c.clie_vendedor IS NOT NULL)
+    GROUP BY e.empl_codigo
+    ORDER BY COUNT(DISTINCT d.depo_codigo) ASC
+
+    RETURN @nuevo_encargado
+
+END;
+GO
+
+CREATE PROCEDURE PR_REASIGNAR_DEPOSITOS_2
+AS
+BEGIN
+
+    DECLARE @deposito CHAR(2)
+
+    DECLARE cDepositos CURSOR FOR
+    SELECT d.depo_codigo
+    FROM Deposito d
+
+    OPEN cDepositos
+    FETCH NEXT INTO @deposito
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+
+        UPDATE Deposito 
+        SET depo_encargado = dbo.FN_OBTENER_NUEVO_ENCARGADO()
+        WHERE depo_codigo = @deposito
+
+        FETCH NEXT INTO @deposito
+
+    END;
+    CLOSE cDepositos
+    DEALLOCATE cDepositos
+
+END;
+GO
+
+
+
+-- EJERCICIO 28
+CREATE PROCEDURE PR_REASIGNAR_VENDEDOR
+AS
+BEGIN
+
+    DECLARE @nuevo_vendedor NUMERIC(6), @cliente CHAR(6)
+    DECLARE @mejor_vendedor NUMERIC(6)
+
+    DECLARE cCliente CURSOR FOR
+    SELECT c.clie_codigo
+    FROM Cliente c
+
+    SELECT TOP 1 @mejor_vendedor = f.fact_vendedor
+    FROM Factura f
+    GROUP BY f.fact_vendedor
+    ORDER BY SUM(f.fact_total) DESC
+
+    OPEN cCliente
+    FETCH NEXT INTO @cliente
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+
+        IF @cliente NOT IN (SELECT f.fact_cliente FROM Factura f)
+        BEGIN
+            SET @nuevo_vendedor = @mejor_vendedor
+        END;
+        ELSE
+        BEGIN
+            SELECT TOP 1 @nuevo_vendedor = f.fact_vendedor
+            FROM Factura f 
+            WHERE f.fact_cliente = @cliente
+            GROUP BY f.fact_vendedor, f.fact_cliente
+            ORDER BY COUNT(DISTINCT f.fact_numero + f.fact_tipo + f.fact_sucursal) DESC
+        END;
+
+        UPDATE Cliente
+        SET clie_vendedor = @nuevo_vendedor
+        WHERE clie_codigo = @cliente
+
+        FETCH NEXT INTO @cliente
+    END;
+
+END;
+GO
+
+
+
+-- EJERCICIO 29
+
+CREATE TRIGGER TR_COMPOSICION_PROD_DIFERENTES
+ON Item_Factura
+AFTER INSERT
+AS
+BEGIN
+
+    IF EXISTS (SELECT i.item_producto
+                FROM inserted i
+                INNER JOIN Composicion c ON i.item_producto = c.comp_componente
+                GROUP BY i.item_producto
+                HAVING COUNT(DISTINCT c.comp_componente) > 1)
+    BEGIN
+
+        PRINT 'ERROR: UNA FACTURA NO PUEDE CONTENER UN PRODUCTO QUE COMPONGA A MÁS DE UN PRODUCTO DIFERENTE'
+        ROLLBACK TRANSACTION;
+        RETURN;
+
+    END;
+
+END;
+GO
+
+
+
+-- EJERCICIO 30
+
+CREATE TRIGGER TR_LIMITE_PRODUCTOS
+ON Item_Factura
+AFTER INSERT, UPDATE
+AS
+BEGIN
+
+    IF UPDATE(item_cantidad)
+    BEGIN
+
+        IF EXISTS (SELECT 1
+            FROM inserted i
+            INNER JOIN Item_Factura i2 ON i.item_producto = i2.item_producto
+            AND i.item_numero + i.item_sucursal + i.item_tipo <> i2.item_numero + i2.item_sucursal + i2.item_tipo
+            INNER JOIN Factura f ON i.item_numero + i.item_sucursal + i.item_tipo <> f.fact_numero + f.fact_sucursal + f.fact_tipo
+            WHERE YEAR(f.fact_fecha) = YEAR(GETDATE()) AND MONTH(f.fact_fecha) = MONTH(GETDATE())
+            GROUP BY i.item_producto, f.fact_cliente
+            HAVING SUM(i.item_cantidad) > 100)
+        BEGIN
+            ROLLBACK TRANSACTION;
+            PRINT 'Se ha superado el limite maximo de compra de un producto'
+            RETURN;
+        END;
+    END;
+END;
+GO
+
+
+
+-- EJERCICIO 31
+
+CREATE TRIGGER TR_LIMITE_EMPLEADOS
+ON Empleado
+AFTER INSERT, UPDATE
+AS
+BEGIN
+
+    IF UPDATE(empl_jefe)
+    BEGIN
+
+        DECLARE @empleado NUMERIC(6)
+        DECLARE @nuevo_jefe NUMERIC(6)
+        DECLARE @gerente NUMERIC(6)
+
+        SELECT @gerente = e.empl_codigo
+                FROM Empleado e
+                WHERE e.empl_jefe IS NULL
+
+        DECLARE cEmpleados CURSOR FOR
+        SELECT e.empl_codigo
+        FROM inserted e 
+        WHERE dbo.FN_EMPLEADOS_A_CARGO(e.empl_jefe) >= 20
+
+        OPEN cEmpleados
+        FETCH NEXT INTO @empleado
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+
+            SELECT TOP 1 @nuevo_jefe = e.empl_codigo
+            FROM Empleado e
+            WHERE dbo.FN_EMPLEADOS_A_CARGO(e.empl_codigo) < 20
+            AND e.empl_codigo <> @empleado
+
+            IF @nuevo_jefe IS NULL
+            BEGIN
+                SET @nuevo_jefe = @gerente
+            END;
+
+            UPDATE Empleado
+            SET empl_jefe = @nuevo_jefe
+            WHERE empl_codigo = @empleado
+
+            FETCH NEXT INTO @empleado
+        END;
+        CLOSE cEmpleados
+        DEALLOCATE cEmpleados
+    END;
+END;
+GO

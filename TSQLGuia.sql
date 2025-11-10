@@ -42,7 +42,7 @@ AS
 
     SELECT @vendido = ISNULL(SUM(i.item_cantidad), 0)
     FROM Item_factura i 
-    INNER JOIN Factura f ON i.Item_factura = f.fact_numero
+    INNER JOIN Factura f ON i.item_numero = f.fact_numero
     WHERE i.item_producto = @producto
     AND f.fact_fecha < @fecha
 
@@ -71,7 +71,7 @@ BEGIN
 
     IF @cant_empl_sin_jefe <= 1 RETURN
 
-    DECLARE @empl_mayor_saladio numeric(6)
+    DECLARE @empl_mayor_salario numeric(6)
 
     SELECT TOP 1 @empl_mayor_salario = e2.empl_codigo
     FROM Empleado e2
@@ -223,7 +223,7 @@ BEGIN
                     AND i.item_tipo = @fact_tipo
                     AND c1.comp_producto = @combo
 
-                    INSERT INTO Item_factura (item_tipo, item_sucursal, Item_factura, item_producto, item_cantidad, item_precio)
+                    INSERT INTO Item_factura (item_tipo, item_sucursal, item_numero, item_producto, item_cantidad, item_precio)
                     SELECT @fact_tipo, @fact_suc, @fact_nro, @combo, @comboCantidad, (@comboCantidad * (SELECT prod_precio FROM Producto WHERE prod_codigo = @combo))
 
                     UPDATE Item_factura
@@ -294,7 +294,7 @@ BEGIN
     INSERT INTO Ventas (codigo, detalle, cant_mov, precio_de_venta, renglon, ganancia)
     SELECT i.item_producto, 
             p.prod_detalle,
-            COUNT(i.Item_factura),
+            COUNT(i.item_numero),
             AVG(i.item_precio),
             ROW_NUMBER() OVER (ORDER BY i.item_producto),
             AVG(i.item_precio) - (SUM(i.item_cantidad) * p.prod_precio)
@@ -866,3 +866,257 @@ BEGIN
     
 END;
 GO
+
+
+-- EJERCICIO 20
+CREATE PROCEDURE PR_COMISION_VENDEDOR
+AS
+BEGIN
+
+    DECLARE @mes_actual INT = MONTH(GETDATE()), @anio_actual INT = YEAR(GETDATE())
+    DECLARE @empleado NUMERIC(6), @ventas_mes DECIMAL(12,2), @cant_prod_distintos INT
+
+    DECLARE cFactura CURSOR FOR
+    SELECT f.fact_vendedor,
+            SUM(i.item_cantidad * i.item_precio),
+            COUNT(DISTINCT i.item_producto)
+    FROM Factura f
+    INNER JOIN Item_Factura i ON f.fact_numero + f.fact_sucursal + f.fact_tipo = i.item_numero + i.item_sucursal + i.item_tipo
+    WHERE MONTH(f.fact_fecha) = @mes_actual AND YEAR(f.fact_fecha) = @anio_actual
+    GROUP BY f.fact_vendedor, MONTH(f.fact_fecha), YEAR(f.fact_fecha)
+
+    BEGIN TRANSACTION
+    
+        OPEN cFactura
+        FETCH NEXT INTO @empleado, @ventas_mes, @cant_prod_distintos
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+
+            DECLARE @comision DECIMAL(12,2)
+
+            SET @comision = @ventas_mes * 0.05
+
+            IF @cant_prod_distintos >= 50
+            BEGIN
+                SET @comision = @comision * 1.03
+            END;
+
+            UPDATE Empleado
+            SET empl_comision = @comision
+            WHERE empl_codigo = @empleado
+
+            FETCH NEXT INTO @empleado, @ventas_mes, @cant_prod_distintos
+        END;
+        CLOSE cFactura
+        DEALLOCATE cFactura
+    COMMIT TRANSACTION
+END;
+GO
+
+
+
+-- EJERCICIO 21
+
+CREATE FUNCTION FN_FAMILIA_PRODUCTO (@producto CHAR(8))
+RETURNS CHAR(3)
+AS
+BEGIN
+
+    DECLARE @familia CHAR(3)
+
+    SELECT @familia = p.prod_familia
+    FROM Producto p 
+    WHERE p.prod_codigo = @producto
+
+    RETURN @familia
+
+END;
+GO
+
+CREATE TRIGGER TR_PROD_DISTINTA_FAMILIA
+ON Item_Factura
+AFTER INSERT
+AS
+BEGIN
+
+    IF EXISTS (SELECT 1
+                FROM inserted i
+                INNER JOIN Item_Factura i2 ON i.item_numero = i2.item_numero
+                                            AND i.item_sucursal = i2.item_sucursal
+                                            AND i.item_tipo = i2.item_tipo
+                                            AND i.item_producto <> i2.item_producto
+                WHERE dbo.FN_FAMILIA_PRODUCTO(i.item_producto) <> dbo.FN_FAMILIA_PRODUCTO(i2.item_producto))
+    BEGIN
+        ROLLBACK TRANSACTION;
+        RETURN;
+    END;
+
+END;
+GO
+
+
+
+-- EJERCICIO 22
+-- RUBRO MAX 20 PROD
+-- > 20 => A OTRO CON MENOS
+-- TODOS 20 => CREO RUBRO REASIGNADO
+
+CREATE PROCEDURE PR_RECATEGORIZAR_RUBROS
+AS
+BEGIN
+
+    DECLARE @rubro CHAR(4), @cantidad_productos INT
+    DECLARE @nuevo_rubro CHAR(4), @nueva_cantidad INT
+    DECLARE @producto CHAR(8)
+
+    DECLARE cRubro CURSOR FOR
+    SELECT p.prod_rubro,
+            COUNT(DISTINCT p.prod_codigo)
+    FROM Producto p 
+    GROUP BY p.prod_rubro
+    HAVING COUNT(DISTINCT p.prod_codigo) > 20
+
+    SELECT TOP 1 @nuevo_rubro = p.prod_rubro,
+                            @nueva_cantidad = COUNT(DISTINCT p.prod_codigo)
+                FROM Producto p 
+                GROUP BY p.prod_rubro 
+                ORDER BY COUNT(DISTINCT p.prod_codigo) ASC
+
+    OPEN cRubro
+    FETCH NEXT INTO @rubro, @cantidad_productos
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+
+        DECLARE cProducto CURSOR FOR
+        SELECT p.prod_codigo
+        FROM Producto p 
+        WHERE p.prod_rubro = @rubro
+
+        OPEN cProducto
+        FETCH NEXT INTO @producto
+        WHILE @@FETCH_STATUS = 0 AND @cantidad_productos > 20
+        BEGIN
+
+            UPDATE Producto
+            SET prod_rubro = @nuevo_rubro
+            WHERE prod_codigo = @producto
+
+            SET @cantidad_productos = @cantidad_productos -1
+            SET @nueva_cantidad = @nueva_cantidad + 1
+
+            IF @nueva_cantidad > 20
+            BEGIN
+                SELECT TOP 1 @nuevo_rubro = p.prod_rubro,
+                            @nueva_cantidad = COUNT(DISTINCT p.prod_codigo)
+                FROM Producto p 
+                GROUP BY p.prod_rubro 
+                ORDER BY COUNT(DISTINCT p.prod_codigo) ASC
+
+                IF @nueva_cantidad > 20
+                BEGIN
+                    INSERT Rubro (rubr_id, rubr_detalle)
+                    VALUES('RRAA','RUBRO REASIGNADO')
+
+                    SET @nuevo_rubro = 'RRAA'
+                    SET @nueva_cantidad = 0
+                END;
+            END;
+            FETCH NEXT INTO @producto
+        END;
+        CLOSE cProducto
+        DEALLOCATE cProducto
+
+        FETCH NEXT INTO @rubro, @cantidad_productos
+    END;
+    CLOSE cRubro
+    DEALLOCATE cRubro
+
+END;
+GO
+
+
+
+
+-- EJERCICIO 23
+CREATE TRIGGER TR_NO_COMPOSICION 
+ON Item_Factura
+AFTER INSERT
+AS
+BEGIN
+
+    IF (SELECT COUNT(DISTINCT i.item_producto) 
+        FROM inserted i 
+        INNER JOIN Composicion c ON c.comp_producto = i.item_producto
+        GROUP BY i.item_numero, i.item_sucursal, i.item_tipo) > 2
+    BEGIN
+    ROLLBACK TRANSACTION
+    RETURN
+    END;
+
+END;
+GO
+
+
+
+-- EJERCICIO 24
+
+CREATE FUNCTION FN_EMPLEADO_MENOS_DEPOSITOS (@zona CHAR(3))
+RETURNS NUMERIC(6)
+AS
+BEGIN
+
+    DECLARE @empleado NUMERIC(6)
+    DECLARE @departamento NUMERIC(6)
+
+    SELECT @departamento = de.depa_codigo
+    FROM Departamento de
+    WHERE de.depa_zona = @zona
+
+    SELECT TOP 1 @empleado = e.empl_codigo
+    FROM Empleado e
+    INNER JOIN Deposito d ON d.depo_encargado = e.empl_codigo
+    WHERE e.empl_departamento = @departamento AND d.depo_zona = @zona
+    GROUP BY e.empl_codigo
+    ORDER BY COUNT(DISTINCT d.depo_codigo) ASC
+
+    RETURN @empleado
+
+
+END;
+GO
+
+CREATE PROCEDURE PR_REASIGNAR_DEPOSITOS
+AS
+BEGIN
+
+    DECLARE @deposito CHAR(2), @zona CHAR(3)
+
+    DECLARE cDeposito CURSOR FOR
+    SELECT d.depo_codigo,
+            d.depo_zona
+    FROM Deposito d 
+    INNER JOIN Empleado e ON e.empl_codigo = d.depo_encargado
+    WHERE d.depo_zona NOT IN (SELECT de.depa_zona 
+                                FROM Departamento de 
+                                WHERE de.depa_codigo = e.empl_departamento)
+
+    OPEN cDeposito
+    FETCH NEXT INTO @deposito, @zona
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+
+        UPDATE Deposito 
+        SET depo_encargado = dbo.FN_EMPLEADO_MENOS_DEPOSITOS(@zona)
+        WHERE depo_codigo = @deposito
+
+        FETCH NEXT INTO @deposito, @zona
+    END;
+    CLOSE cDeposito
+    DEALLOCATE cDeposito
+
+END;
+GO
+
+
+
+-- EJERCICIO 25

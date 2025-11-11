@@ -65,7 +65,7 @@ GO
 
 
 
--- 2024 2C
+-- 2024 2C 16/11
 
 CREATE TABLE auditoria_cliente (
     clie_codigo CHAR(6),
@@ -158,6 +158,121 @@ BEGIN
                 @intento_masiva)
 
     END;
+
+END;
+GO
+
+
+
+-- 2C2024 16/11
+
+CREATE TABLE Productos_mas_vendidos (
+    anio INT,
+    posicion INT,
+    prod_codigo CHAR(8),
+    cantidad_vendida DECIMAL(12,2)
+)
+GO
+
+CREATE TRIGGER TR_PRODS_MAS_VENDIDOS
+ON Item_factura
+AFTER INSERT, UPDATE, DELETE
+AS
+BEGIN
+
+    DECLARE @anio INT
+
+    DECLARE cAnios CURSOR FOR
+    SELECT DISTINCT YEAR(f.fact_fecha)
+    FROM Factura f
+    WHERE YEAR(f.fact_fecha) IN (SELECT YEAR(f2.fact_fecha)
+                                FROM inserted i 
+                                INNER JOIN Factura f2 ON i.item_numero = f2.fact_numero
+                                                        AND i.item_tipo = f2.fact_tipo
+                                                        AND i.item_sucursal = f2.fact_sucursal)
+    OR YEAR(f.fact_fecha) IN (SELECT YEAR(f3.fact_fecha)
+                                FROM deleted d
+                                INNER JOIN Factura f3 ON d.item_numero = f3.fact_numero
+                                                        AND d.item_tipo = f3.fact_tipo
+                                                        AND d.item_sucursal = f3.fact_sucursal)
+
+    OPEN cAnios
+    FETCH NEXT INTO @anio
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+
+        DELETE FROM Productos_mas_vendidos WHERE anio = @anio
+
+        INSERT INTO Productos_mas_vendidos (anio, posicion, prod_codigo, cantidad_vendida)
+        SELECT TOP 10 YEAR(f.fact_fecha) AS anio,
+                        ROW_NUMBER() OVER (ORDER BY SUM(i.item_cantidad) DESC) AS posicion,
+                        i.item_producto, 
+                        SUM(i.item_cantidad)
+        FROM Item_factura i
+        INNER JOIN Factura f ON f.fact_numero = i.item_numero
+                            AND f.fact_tipo = i.item_tipo
+                            AND f.fact_sucursal = i.item_sucursal
+        WHERE YEAR(f.fact_fecha) = @anio
+        GROUP BY i.item_producto, YEAR(f.fact_fecha)
+
+        FETCH NEXT INTO @anio
+
+    END;
+    CLOSE cAnios
+    DEALLOCATE cAnios
+
+END;
+GO
+
+
+
+-- 2C2024 20/11
+
+CREATE PROCEDURE PR_REORGANIZAR_VENTAS_COMPUESTOS
+AS
+BEGIN
+
+    DECLARE @producto CHAR(8), @numero CHAR(8), @sucursal CHAR(4), @tipo CHAR(1), @cantidad DECIMAL(12,2)
+
+    DECLARE cItems CURSOR FOR
+    SELECT i.item_producto, 
+            i.item_numero, 
+            i.item_sucursal, 
+            i.item_tipo,
+            i.item_cantidad
+    FROM Item_Factura i 
+    INNER JOIN Composicion c ON i.item_producto = c.comp_producto
+    GROUP BY i.item_producto, i.item_numero, i.item_sucursal, i.item_tipo, i.item_cantidad
+
+    OPEN cItems
+    FETCH NEXT INTO @producto, @numero, @sucursal, @tipo, @cantidad
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+
+        BEGIN TRANSACTION
+
+            INSERT INTO Item_Factura (item_tipo, item_sucursal, item_numero, item_producto, item_cantidad, item_precio)
+            SELECT @tipo,
+                    @sucursal,
+                    @numero,
+                    p.prod_codigo,
+                    c.comp_cantidad * @cantidad,
+                    p.prod_precio
+            FROM Composicion c
+            INNER JOIN Producto p ON p.prod_codigo = c.comp_componente
+            WHERE c.comp_producto = @producto
+
+            DELETE FROM Item_Factura WHERE item_numero = @numero 
+            AND item_tipo = @tipo 
+            AND item_sucursal = @sucursal
+            AND item_producto = @producto
+
+        COMMIT TRANSACTION
+
+        FETCH NEXT INTO @producto, @numero, @sucursal, @tipo, @cantidad
+    END;
+    CLOSE cItems
+    DEALLOCATE cItems
 
 END;
 GO

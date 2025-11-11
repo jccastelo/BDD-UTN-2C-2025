@@ -276,3 +276,101 @@ BEGIN
 
 END;
 GO
+
+
+
+-- 2C2024 23/11
+
+CREATE TABLE Registro_factura (
+    fact_numero CHAR(8),
+    fact_sucursal CHAR(4),
+    fact_tipo CHAR(1),
+    fact_estado CHAR(8),
+    fecha_registro DATETIME
+
+    FOREIGN KEY (fact_tipo, fact_sucursal, fact_numero) 
+    REFERENCES Factura(fact_tipo, fact_sucursal, fact_numero)
+)
+GO
+
+CREATE TRIGGER TR_REGISTRAR_FACTURA
+ON Factura 
+AFTER INSERT, UPDATE, DELETE
+AS
+BEGIN
+
+    DECLARE @fecha DATETIME = GETDATE()
+
+    CREATE TABLE #Facturas_invalidas (
+        fact_numero CHAR(8),
+        fact_sucursal CHAR(4),
+        fact_tipo CHAR(1)
+    )
+
+    IF EXISTS (SELECT 1 FROM deleted) AND NOT EXISTS (SELECT 1 FROM inserted)
+    BEGIN
+
+        INSERT INTO #Facturas_invalidas (fact_numero, fact_sucursal, fact_tipo)
+        SELECT d.fact_numero,
+                d.fact_sucursal,
+                d.fact_tipo
+        FROM deleted d
+        WHERE d.fact_numero+d.fact_sucursal+d.fact_tipo NOT IN (SELECT i.fact_numero+i.fact_sucursal+i.fact_tipo
+                                                                FROM inserted i)
+
+    END;
+
+    IF EXISTS (SELECT 1 
+                FROM inserted f 
+                INNER JOIN Item_Factura i ON f.fact_numero = i.item_numero
+                                            AND f.fact_sucursal = i.item_sucursal
+                                            AND f.fact_tipo = i.item_tipo
+                GROUP BY f.fact_numero, f.fact_tipo, f.fact_sucursal, f.fact_total
+                HAVING f.fact_total <> SUM(i.item_cantidad * i.item_precio))
+    BEGIN
+
+        INSERT INTO #Facturas_invalidas (fact_numero, fact_sucursal, fact_tipo)
+        SELECT f.fact_numero,
+                f.fact_sucursal,
+                f.fact_tipo
+        FROM inserted f 
+        INNER JOIN Item_Factura i ON f.fact_numero = i.item_numero
+                                    AND f.fact_sucursal = i.item_sucursal
+                                    AND f.fact_tipo = i.item_tipo
+        GROUP BY f.fact_numero, f.fact_tipo, f.fact_sucursal, f.fact_total
+        HAVING f.fact_total <> SUM(i.item_cantidad * i.item_precio)
+
+    END;
+
+    IF EXISTS (SELECT 1 FROM inserted WHERE fact_fecha < GETDATE())
+    BEGIN
+
+        INSERT INTO #Facturas_invalidas (fact_numero, fact_sucursal, fact_tipo)
+        SELECT f.fact_numero,
+                f.fact_sucursal,
+                f.fact_tipo
+        FROM inserted f 
+        WHERE fact_fecha < GETDATE()
+
+    END;
+
+    INSERT INTO Registro_factura (fact_numero, fact_sucursal, fact_tipo, fact_estado, fecha_registro)
+    SELECT f.fact_numero,
+            f.fact_sucursal,
+            f.fact_tipo,
+            'INVALIDO',
+            @fecha
+    FROM #Facturas_invalidas f
+
+    INSERT INTO Registro_factura (fact_numero, fact_sucursal, fact_tipo, fact_estado, fecha_registro)
+    SELECT i.fact_numero,
+            i.fact_sucursal,
+            i.fact_tipo,
+            'VALIDO',
+            @fecha
+    FROM inserted i
+    WHERE i.fact_numero+i.fact_sucursal+i.fact_tipo NOT IN (SELECT f.fact_numero+f.fact_sucursal+f.fact_tipo
+                                                            FROM #Facturas_invalidas f)
+
+END;
+GO
